@@ -1,0 +1,6 @@
+# Copy this file to android/key.properties and replace the values.
+# Keep android/key.properties and the keystore file private.
+storePassword=REPLACE_WITH_STORE_PASSWORD
+keyPassword=REPLACE_WITH_KEY_PASSWORD
+keyAlias=trackr-upload
+storeFile=trackr-upload.jks
