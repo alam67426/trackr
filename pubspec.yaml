@@ -1,7 +1,7 @@
 name: trackr
 description: Trackr - a local-first Smart UPI Expense Tracker for Indian users.
 publish_to: "none"
-version: 1.6.20+34
+version: 1.6.23+37
 
 environment:
   sdk: ">=3.4.0 <4.0.0"

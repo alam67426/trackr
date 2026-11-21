@@ -74,11 +74,19 @@ class SettingsScreen extends ConsumerWidget {
                     final listener = SMSListener();
                     final granted = await listener.requestPermission();
                     if (!granted) return;
-                    await beginNewSmsDetectionWindow();
+                    await beginNewSmsDetectionWindow(lookback: const Duration(days: 30));
                   }
                   await notifier
                       .update(settings.copyWith(smsAutoDetection: value));
                 },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.sync_outlined),
+                title: const Text('Scan recent inbox SMS'),
+                subtitle: const Text('Search messages from the last 30 days for expenses'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _rescanInbox(context, ref),
               ),
               const Divider(height: 1),
               SwitchListTile(
@@ -227,5 +235,37 @@ class SettingsScreen extends ConsumerWidget {
     await ref.read(pendingProvider.notifier).clear();
     await ref.read(reimbursementProvider.notifier).clear();
     await ref.read(profileProvider.notifier).clear();
+  }
+
+  Future<void> _rescanInbox(BuildContext context, WidgetRef ref) async {
+    final listener = SMSListener();
+    final granted = await listener.requestPermission();
+    if (!granted) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('SMS permission is required to scan messages.')),
+        );
+      }
+      return;
+    }
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Scanning recent bank SMS...')),
+      );
+    }
+    var found = 0;
+    await listener.rescanRecentInbox((pending) async {
+      final added = await ref.read(pendingProvider.notifier).add(pending);
+      if (added) found++;
+    }, lookback: const Duration(days: 30));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(found > 0
+                ? 'Found $found new transaction(s) for review!'
+                : 'No new bank transactions found in recent messages.')),
+      );
+    }
   }
 }

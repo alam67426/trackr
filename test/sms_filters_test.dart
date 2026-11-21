@@ -238,4 +238,29 @@ Ref 127178338507''';
     expect(
         parser.isSameTransaction(transaction, withoutReference), isTrue);
   });
+
+  test('parses HDFC debit notification starting with Debit Rs.', () {
+    const message = "Debit Rs.500.00\nFrom HDFC Bank A/C *9091\nTo MR MD AFTAB ALAM\nOn 31/10/26\nRef 657843118689";
+    final parser = SMSParser();
+    expect(SMSFilter.isTransactionSMS(message, 'AD-HDFCBK-T'), isTrue);
+    final parsed = parser.parseRawMessage(body: message, sender: 'AD-HDFCBK-T');
+    expect(parsed, isNotNull);
+    expect(parsed!.transaction.amount, 500);
+    expect(parsed.transaction.type, TransactionType.expense);
+    expect(parsed.transaction.accountLastDigits, '9091');
+    expect(parsed.transaction.bankName, 'Hdfc Bank');
+    expect(parsed.transaction.description, 'MR MD AFTAB ALAM');
+  });
+
+  test('falls back gracefully when debit message omits recipient merchant', () {
+    const message = 'Debit Rs.500.00 From HDFC Bank A/C *9091';
+    final parser = SMSParser();
+    expect(SMSFilter.isTransactionSMS(message, 'AD-HDFCBK-T'), isTrue);
+    final parsed = parser.parseRawMessage(body: message, sender: 'AD-HDFCBK-T');
+    expect(parsed, isNotNull);
+    expect(parsed!.transaction.amount, 500);
+    expect(parsed.transaction.type, TransactionType.expense);
+    expect(parsed.transaction.bankName, 'Hdfc Bank');
+    expect(parsed.transaction.description, 'Hdfc Bank Debit');
+  });
 }

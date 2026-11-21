@@ -222,20 +222,35 @@ class SMSParser {
   String extractMerchant(String body, [String sender = '', String? reference]) {
     final patterns = [
       RegExp(
-          r'(?:paid to|sent to|transfer(?:red)? to|to|at)\s+([a-z0-9 .&_-]{3,60})',
+          r'(?:paid to|sent to|transfer(?:red)? to|towards|to|at)\s+([a-z0-9 .&_-]{3,60})',
           caseSensitive: false),
       RegExp(r'(?:from|received from|credited from)\s+([a-z0-9 .&_-]{3,40})',
           caseSensitive: false),
       RegExp(r'upi[:\s]+([a-z0-9._-]{3,40})', caseSensitive: false),
     ];
-    for (final pattern in patterns) {
-      final match = pattern.firstMatch(body);
-      if (match != null) return _clean(match.group(1)!);
+    for (var i = 0; i < patterns.length; i++) {
+      final match = patterns[i].firstMatch(body);
+      if (match != null) {
+        final candidate = _clean(match.group(1)!);
+        final lower = candidate.toLowerCase();
+        final looksLikeBank = lower.contains('bank') ||
+            lower.contains('a/c') ||
+            lower.contains('acct') ||
+            SMSFilter.bankSenderAliases.contains(lower);
+        if (i == 1 && looksLikeBank) {
+          continue;
+        }
+        if (candidate.isNotEmpty) return candidate;
+      }
     }
     if (sender.toLowerCase().contains('can')) {
       return reference == null
           ? 'Canara Bank Transaction'
           : 'Canara Bank Transaction $reference';
+    }
+    final bank = extractBankName(sender, body);
+    if (bank != null) {
+      return '$bank Debit';
     }
     return 'UPI Transaction';
   }

@@ -1,63 +1,75 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/pending_transaction_model.dart';
+import '../models/resolved_record_model.dart';
 import '../models/transaction_model.dart';
-import '../services/storage_service.dart';
+import '../services/resolved_ledger.dart';
 import '../services/sms_parser.dart';
+import '../services/storage_service.dart';
 import '../utils/sms_filters.dart';
 import 'transaction_provider.dart';
 
+final pendingStorageServiceProvider =
+    Provider<StorageService>((ref) => StorageService.instance);
+
 final pendingProvider =
     StateNotifierProvider<PendingNotifier, List<PendingTransaction>>((ref) {
-  return PendingNotifier(ref)..load();
+  return PendingNotifier(
+    ref,
+    storage: ref.watch(pendingStorageServiceProvider),
+  )..load();
 });
 
 class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
-  PendingNotifier(this._ref) : super(const []);
+  PendingNotifier(this._ref, {StorageService? storage})
+      : _storage = storage ?? StorageService.instance,
+        super(const []);
 
   final Ref _ref;
-  final Set<String> _handledRawSms = <String>{};
+  final StorageService _storage;
+  ResolvedLedger _ledger = ResolvedLedger();
   final SMSParser _parser = SMSParser();
   Future<void> _writeQueue = Future.value();
 
+  ResolvedLedger get ledger => _ledger;
+
   Future<void> load() async {
     await _ref.read(transactionProvider.notifier).load();
-    final rows = await StorageService.instance
-        .readSecureList(pendingTransactionsStorageKey);
-    final handled = await StorageService.instance
-        .readSecureStringList(handledSmsStorageKey);
-    _handledRawSms
-      ..clear()
-      ..addAll(handled);
-    final migratedHandledKeys = _migrateHandledFallbackKeys();
+    _ledger = await ResolvedLedger.load(_storage);
+    final rows = await _storage.readSecureList(pendingTransactionsStorageKey);
     final pending = rows.map(PendingTransaction.fromJson).map((item) {
       return item.transaction.categoryId == 'public_transport'
-          ? item.copyWith(transaction: item.transaction.copyWith(categoryId: 'commute'))
+          ? item.copyWith(
+              transaction: item.transaction.copyWith(categoryId: 'commute'))
           : item;
     }).where((item) =>
-        !_isHandled(item) && !SMSFilter.isScheduledDebit(item.rawSms)).toList();
+        !_ledger.isResolved(item) &&
+        !SMSFilter.isScheduledDebit(item.rawSms)).toList();
     pending.sort((a, b) => b.detectedAt.compareTo(a.detectedAt));
     final uniquePending = _unique(pending);
-    final alreadyConfirmed = uniquePending
-        .where(_matchesConfirmedTransaction)
-        .toList();
+    final alreadyConfirmed =
+        uniquePending.where(_matchesConfirmedTransaction).toList();
     final activePending = uniquePending
         .where((item) => !alreadyConfirmed.contains(item))
         .toList();
+
     if (alreadyConfirmed.isNotEmpty) {
-      _handledRawSms.addAll(
-          alreadyConfirmed.expand(_handledKeys));
-      await StorageService.instance
-          .writeSecureStringList(handledSmsStorageKey, _handledRawSms.toList());
-    } else if (migratedHandledKeys) {
-      await StorageService.instance
-          .writeSecureStringList(handledSmsStorageKey, _handledRawSms.toList());
+      for (final item in alreadyConfirmed) {
+        _ledger.add(ResolvedRecord.fromPending(
+          item,
+          action: 'auto_confirmed',
+          parser: _parser,
+        ));
+      }
+      await ResolvedLedger.save(_storage, _ledger);
     }
+
     state = activePending;
-    if (migratedHandledKeys ||
+    if (alreadyConfirmed.isNotEmpty ||
         activePending.length != rows.length ||
         rows.any((row) =>
-            (row['transaction'] as Map?)?['categoryId'] == 'public_transport')) {
+            (row['transaction'] as Map?)?['categoryId'] ==
+            'public_transport')) {
       await _persist();
     }
   }
@@ -66,19 +78,22 @@ class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
       _serialize(() => _add(pending));
 
   Future<bool> _add(PendingTransaction pending) async {
-    final fingerprint = _fingerprintKey(pending);
-    final rawKey = _rawKey(pending.rawSms);
-    if (_handledRawSms.contains(pending.rawSms) ||
-        _handledRawSms.contains(rawKey) ||
-        _handledRawSms.contains(fingerprint)) return false;
+    if (_ledger.isResolved(pending)) return false;
     if (_matchesConfirmedTransaction(pending)) {
-      await _markHandled(_handledKeys(pending));
+      _ledger.add(ResolvedRecord.fromPending(
+        pending,
+        action: 'auto_confirmed',
+        parser: _parser,
+      ));
+      await ResolvedLedger.save(_storage, _ledger);
       return false;
     }
+    final rawKey = ResolvedRecord.normalizeRaw(pending.rawSms);
     if (state.any((item) =>
-        _rawKey(item.rawSms) == rawKey ||
-        _parser.isSameTransaction(item.transaction, pending.transaction)))
+        ResolvedRecord.normalizeRaw(item.rawSms) == rawKey ||
+        _parser.isSameTransaction(item.transaction, pending.transaction))) {
       return false;
+    }
     state = [pending, ...state];
     await _persist();
     return true;
@@ -99,7 +114,14 @@ class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
       await _ref.read(transactionProvider.notifier).add(pending.transaction);
     }
     final duplicates = _equivalent(pending, state).toList();
-    await _markHandled(duplicates.expand(_handledKeys));
+    for (final item in duplicates) {
+      _ledger.add(ResolvedRecord.fromPending(
+        item,
+        action: 'confirm',
+        parser: _parser,
+      ));
+    }
+    await ResolvedLedger.save(_storage, _ledger);
     await _removeMany(duplicates.map((item) => item.id));
   }
 
@@ -115,7 +137,14 @@ class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
     }
     if (pending == null) return;
     final duplicates = _equivalent(pending, state).toList();
-    await _markHandled(duplicates.expand(_handledKeys));
+    for (final item in duplicates) {
+      _ledger.add(ResolvedRecord.fromPending(
+        item,
+        action: 'reject',
+        parser: _parser,
+      ));
+    }
+    await ResolvedLedger.save(_storage, _ledger);
     await _removeMany(duplicates.map((item) => item.id));
   }
 
@@ -129,22 +158,33 @@ class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
       if (!_matchesConfirmedTransaction(item)) {
         await _ref.read(transactionProvider.notifier).add(item.transaction);
       }
+      _ledger.add(ResolvedRecord.fromPending(
+        item,
+        action: 'confirm',
+        parser: _parser,
+      ));
     }
-    await _markHandled(items.expand(_handledKeys));
-    final ids = items.map((item) => item.id).toSet();
-    state = state.where((item) => !ids.contains(item.id)).toList();
-    await _persist();
+    await ResolvedLedger.save(_storage, _ledger);
+    state = const [];
+    await _cleanPendingStorage();
   }
 
   Future<void> rejectAll() => _serialize(_rejectAll);
 
   Future<void> _rejectAll() async {
     final items = List<PendingTransaction>.from(state);
-    final ids = items.map((item) => item.id).toSet();
-    if (ids.isEmpty) return;
-    await _markHandled(items.expand(_handledKeys));
-    state = state.where((item) => !ids.contains(item.id)).toList();
-    await _persist();
+    if (items.isEmpty) return;
+
+    for (final item in items) {
+      _ledger.add(ResolvedRecord.fromPending(
+        item,
+        action: 'reject',
+        parser: _parser,
+      ));
+    }
+    await ResolvedLedger.save(_storage, _ledger);
+    state = const [];
+    await _cleanPendingStorage();
   }
 
   Future<void> remove(String id) => _serialize(() => _remove(id));
@@ -157,7 +197,19 @@ class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
   Future<void> _removeMany(Iterable<String> ids) async {
     final idSet = ids.toSet();
     state = state.where((item) => !idSet.contains(item.id)).toList();
-    await _persist();
+    await _cleanPendingStorage();
+  }
+
+  Future<void> _cleanPendingStorage() async {
+    final rows = await _storage.readSecureList(pendingTransactionsStorageKey);
+    final activeIds = state.map((e) => e.id).toSet();
+    final filtered = rows.where((row) {
+      final p = PendingTransaction.fromJson(row);
+      return activeIds.contains(p.id) &&
+          !_ledger.isResolved(p) &&
+          !SMSFilter.isScheduledDebit(p.rawSms);
+    }).toList();
+    await _storage.writeSecureList(pendingTransactionsStorageKey, filtered);
   }
 
   Future<void> updateTransaction(String id, TrackrTransaction transaction) =>
@@ -176,10 +228,10 @@ class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
 
   Future<void> _clear() async {
     state = const [];
-    _handledRawSms.clear();
-    await StorageService.instance
-        .writeSecureStringList(handledSmsStorageKey, const []);
-    await _persist();
+    _ledger.clear();
+    await _storage.writeSecureList(resolvedLedgerStorageKey, const []);
+    await _storage.writeSecureStringList(handledSmsStorageKey, const []);
+    await _storage.writeSecureList(pendingTransactionsStorageKey, const []);
   }
 
   bool _matchesConfirmedTransaction(PendingTransaction pending) {
@@ -200,59 +252,27 @@ class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
   String _fingerprintKey(PendingTransaction pending) =>
       'sms:${_parser.transactionFingerprint(pending.transaction)}';
 
-  String _identityKey(PendingTransaction pending) =>
-      'sms:identity:${_parser.transactionIdentity(pending.transaction)}';
-
-  Iterable<String> _handledKeys(PendingTransaction pending) => [
-        _rawKey(pending.rawSms),
-        _fingerprintKey(pending),
-        _identityKey(pending),
-      ];
-
-  /// A background isolate can finish a queued write just after an item is
-  /// confirmed or rejected. The handled ledger is authoritative, so discard
-  /// any stale row that survives in Pending storage on the next load.
-  bool _isHandled(PendingTransaction pending) {
-    final rawKey = _rawKey(pending.rawSms);
-    final fingerprint = _fingerprintKey(pending);
-    return _handledRawSms.contains(pending.rawSms) ||
-        _handledRawSms.contains(rawKey) ||
-        _handledRawSms.contains(fingerprint) ||
-        _handledRawSms.contains(_identityKey(pending));
-  }
-
-  bool _migrateHandledFallbackKeys() {
-    final identities = <String>[];
-    for (final key in _handledRawSms) {
-      if (!key.startsWith('sms:fallback:')) continue;
-      final parts = key.substring('sms:fallback:'.length).split('|');
-      if (parts.length < 6) continue;
-      identities.add('sms:identity:${parts.take(parts.length - 1).join('|')}');
-    }
-    final before = _handledRawSms.length;
-    _handledRawSms.addAll(identities);
-    return _handledRawSms.length != before;
-  }
-
-  String _rawKey(String rawSms) => 'raw:${rawSms
-      .toLowerCase()
-      .replaceAll(RegExp(r'[^a-z0-9]'), '')}';
-
   List<PendingTransaction> _unique(List<PendingTransaction> items) {
     final seenRaw = <String>{};
     final seenFingerprint = <String>{};
+    final seenRef = <String>{};
     final result = <PendingTransaction>[];
     for (final item in items) {
-      final raw = _rawKey(item.rawSms);
+      final raw = ResolvedRecord.normalizeRaw(item.rawSms);
       final fingerprint = _fingerprintKey(item);
+      final ref = item.transaction.referenceNumber?.trim().toLowerCase();
       if (seenRaw.contains(raw) ||
           seenFingerprint.contains(fingerprint) ||
+          (ref != null && ref.isNotEmpty && seenRef.contains(ref)) ||
           result.any((existing) =>
               _parser.isSameTransaction(existing.transaction, item.transaction))) {
         continue;
       }
       seenRaw.add(raw);
       seenFingerprint.add(fingerprint);
+      if (ref != null && ref.isNotEmpty) {
+        seenRef.add(ref);
+      }
       result.add(item);
     }
     return result;
@@ -260,11 +280,24 @@ class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
 
   Iterable<PendingTransaction> _equivalent(
       PendingTransaction target, Iterable<PendingTransaction> items) {
-    final raw = _rawKey(target.rawSms);
-    final fingerprint = _fingerprintKey(target);
-    return items.where((item) =>
-        _rawKey(item.rawSms) == raw ||
-        _parser.isSameTransaction(item.transaction, target.transaction));
+    final raw = ResolvedRecord.normalizeRaw(target.rawSms);
+    final targetRef = target.transaction.referenceNumber?.trim().toLowerCase();
+    return items.where((item) {
+      if (item.id == target.id) return true;
+      if (ResolvedRecord.normalizeRaw(item.rawSms) == raw) return true;
+      if (_parser.isSameTransaction(item.transaction, target.transaction)) {
+        return true;
+      }
+      final itemRef = item.transaction.referenceNumber?.trim().toLowerCase();
+      if (targetRef != null &&
+          targetRef.isNotEmpty &&
+          itemRef != null &&
+          itemRef.isNotEmpty &&
+          targetRef == itemRef) {
+        return true;
+      }
+      return false;
+    });
   }
 
   Future<T> _serialize<T>(Future<T> Function() operation) {
@@ -273,15 +306,6 @@ class PendingNotifier extends StateNotifier<List<PendingTransaction>> {
     return result;
   }
 
-  Future<void> _markHandled(Iterable<String> messages) async {
-    _handledRawSms.addAll(messages);
-    while (_handledRawSms.length > 2000) {
-      _handledRawSms.remove(_handledRawSms.first);
-    }
-    await StorageService.instance
-        .writeSecureStringList(handledSmsStorageKey, _handledRawSms.toList());
-  }
-
-  Future<void> _persist() => StorageService.instance.writeSecureList(
+  Future<void> _persist() => _storage.writeSecureList(
       pendingTransactionsStorageKey, state.map((e) => e.toJson()).toList());
 }

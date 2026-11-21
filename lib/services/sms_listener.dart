@@ -3,10 +3,12 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:telephony/telephony.dart';
 
 import '../models/pending_transaction_model.dart';
-import 'sms_parser.dart';
+import '../models/resolved_record_model.dart';
 import 'local_intelligence_service.dart';
 import 'notification_access_service.dart';
 import 'notification_service.dart';
+import 'resolved_ledger.dart';
+import 'sms_parser.dart';
 import 'storage_service.dart';
 import 'transaction_service.dart';
 
@@ -14,26 +16,23 @@ typedef PendingSmsHandler = Future<void> Function(PendingTransaction pending);
 
 const smsDetectionStartStorageKey = 'smsDetectionStartedAt';
 
-String _rawSmsKey(String rawSms) => 'raw:${rawSms
-    .toLowerCase()
-    .replaceAll(RegExp(r'[^a-z0-9]'), '')}';
+/// Lookback window when enabling SMS detection (default 30 days) so recent
+/// transactions can be reviewed without backfilling years of history.
+const defaultSmsLookback = Duration(days: 30);
 
-/// The app never backfills the phone's SMS history. This timestamp is set
-/// when the user enables detection and forms a hard boundary for all inbox,
-/// background-SMS, and business-notification processing.
-Future<int> smsDetectionStartMillis() async {
+Future<int> smsDetectionStartMillis({Duration lookback = defaultSmsLookback}) async {
   final prefs = await StorageService.instance.prefs();
   final existing = prefs.getInt(smsDetectionStartStorageKey);
   if (existing != null) return existing;
-  final now = DateTime.now().millisecondsSinceEpoch;
-  await prefs.setInt(smsDetectionStartStorageKey, now);
-  return now;
+  final start = DateTime.now().subtract(lookback).millisecondsSinceEpoch;
+  await prefs.setInt(smsDetectionStartStorageKey, start);
+  return start;
 }
 
-Future<void> beginNewSmsDetectionWindow() async {
+Future<void> beginNewSmsDetectionWindow({Duration lookback = defaultSmsLookback}) async {
   final prefs = await StorageService.instance.prefs();
-  await prefs.setInt(
-      smsDetectionStartStorageKey, DateTime.now().millisecondsSinceEpoch);
+  final start = DateTime.now().subtract(lookback).millisecondsSinceEpoch;
+  await prefs.setInt(smsDetectionStartStorageKey, start);
 }
 
 /// Runs in a separate Flutter isolate when Android delivers an SMS while
@@ -54,34 +53,31 @@ Future<void> backgroundSmsHandler(SmsMessage message) async {
     final parser = SMSParser();
     final pending = parser.parseUPISMS(message);
     if (pending == null) return;
-    final fingerprint =
-        'sms:${parser.transactionFingerprint(pending.transaction)}';
-    final identity =
-        'sms:identity:${parser.transactionIdentity(pending.transaction)}';
 
-    final handled = await StorageService.instance
-        .readSecureStringList(handledSmsStorageKey);
-    final rawKey = _rawSmsKey(pending.rawSms);
-    if (handled.contains(pending.rawSms) ||
-        handled.contains(rawKey) ||
-        handled.contains(fingerprint) ||
-        handled.contains(identity))
-      return;
+    final ledger = await ResolvedLedger.load(StorageService.instance);
+    if (ledger.isResolved(pending)) return;
 
     final confirmed = await TransactionService(StorageService.instance).load();
     if (confirmed.any(
         (item) => parser.isSameTransaction(item, pending.transaction))) {
-      await StorageService.instance.writeSecureStringList(
-          handledSmsStorageKey, [...handled, rawKey, fingerprint, identity]);
+      ledger.add(ResolvedRecord.fromPending(
+        pending,
+        action: 'auto_confirmed',
+        parser: parser,
+      ));
+      await ResolvedLedger.save(StorageService.instance, ledger);
       return;
     }
 
     final rows = await StorageService.instance
         .readSecureList(pendingTransactionsStorageKey);
     final queue = rows.map(PendingTransaction.fromJson).toList();
+    final rawKey = ResolvedRecord.normalizeRaw(pending.rawSms);
     if (queue.any((item) =>
-        item.rawSms == pending.rawSms ||
-        parser.isSameTransaction(item.transaction, pending.transaction))) return;
+        ResolvedRecord.normalizeRaw(item.rawSms) == rawKey ||
+        parser.isSameTransaction(item.transaction, pending.transaction))) {
+      return;
+    }
 
     queue.add(pending);
     queue.sort((a, b) => b.detectedAt.compareTo(a.detectedAt));
@@ -129,8 +125,7 @@ class SMSListener {
     return true;
   }
 
-  /// Retained for a future manual recovery action. It never reads messages
-  /// from before the user enabled detection.
+  /// Scans recent SMS from the inbox matching bank transaction formats.
   Future<void> scanRecentInbox(
     PendingSmsHandler onDetected, {
     int maxTransactions = 500,
@@ -152,6 +147,37 @@ class SMSListener {
       detectedCount++;
       if (detectedCount >= maxTransactions) break;
     }
+  }
+
+  /// Explicit user-triggered or lookback scan for the past [lookback] period.
+  Future<int> rescanRecentInbox(
+    PendingSmsHandler onDetected, {
+    int maxTransactions = 500,
+    Duration lookback = const Duration(days: 30),
+  }) async {
+    if (!await requestPermission()) return 0;
+    final cutoff = DateTime.now().subtract(lookback).millisecondsSinceEpoch;
+    final prefs = await StorageService.instance.prefs();
+    final existing = prefs.getInt(smsDetectionStartStorageKey);
+    if (existing == null || existing > cutoff) {
+      await prefs.setInt(smsDetectionStartStorageKey, cutoff);
+    }
+
+    final messages = await Telephony.instance.getInboxSms(
+      sortOrder: [OrderBy(SmsColumn.DATE, sort: Sort.DESC)],
+    );
+
+    var detectedCount = 0;
+    for (final message in messages) {
+      if (message.date == null || message.date! < cutoff) continue;
+      final pending = _parser.parseUPISMS(message);
+      if (pending == null) continue;
+
+      await onDetected(pending);
+      detectedCount++;
+      if (detectedCount >= maxTransactions) break;
+    }
+    return detectedCount;
   }
 
   Future<void> scanBusinessNotifications(PendingSmsHandler onDetected) async {

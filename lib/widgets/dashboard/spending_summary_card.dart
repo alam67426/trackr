@@ -20,72 +20,128 @@ class SpendingSummaryCard extends StatelessWidget {
     final income = transactions
         .where((t) => t.type == TransactionType.income)
         .fold<double>(0, (s, t) => s + t.amount);
+    final available = income - spent;
+    final isAvailablePositive = available >= 0;
+
     return GlassCard(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('MONTH AT A GLANCE',
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: const Color(0xFF96A2B8),
-                    letterSpacing: 1,
-                  )),
-          const SizedBox(height: 14),
-          Row(children: [
-            _Metric(
-                label: 'Spent',
-                value: money(spent),
-                color: const Color(0xFFFF6B6B)),
-            const SizedBox(width: 12),
-            _Metric(
-                label: 'Income',
-                value: money(income),
-                color: const Color(0xFF00B894)),
-            const SizedBox(width: 12),
-            _Metric(
-                label: 'Available',
-                value: money(income - spent),
-                color: const Color(0xFF00CEC9)),
-          ]),
+          Text(
+            "YOU'VE SPENT",
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: const Color(0xFF96A2B8),
+                  letterSpacing: 1.6,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 11,
+                ),
+          ),
+          const SizedBox(height: 6),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              money(spent),
+              style: const TextStyle(
+                fontSize: 44,
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+                letterSpacing: -1,
+                height: 1.15,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            isAvailablePositive
+                ? '${money(available)} left from ${money(income)}'
+                : 'Exceeded income by ${money(available.abs())}',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: isAvailablePositive
+                  ? const Color(0xFF00B894)
+                  : const Color(0xFFFF6B6B),
+            ),
+          ),
+          const SizedBox(height: 16),
+          // Clean horizontal pills
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _StatPill(
+                symbol: '↑',
+                label: 'In',
+                amount: money(income),
+                color: const Color(0xFF00B894),
+              ),
+              const SizedBox(width: 10),
+              _StatPill(
+                symbol: '↓',
+                label: 'Out',
+                amount: money(spent),
+                color: const Color(0xFFFF6B6B),
+              ),
+            ],
+          ),
         ],
       ),
     );
   }
 }
 
-class _Metric extends StatelessWidget {
-  const _Metric(
-      {required this.label, required this.value, required this.color});
+class _StatPill extends StatelessWidget {
+  const _StatPill({
+    required this.symbol,
+    required this.label,
+    required this.amount,
+    required this.color,
+  });
 
+  final String symbol;
   final String label;
-  final String value;
+  final String amount;
   final Color color;
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: .10),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: Theme.of(context).textTheme.labelSmall),
-            const SizedBox(height: 6),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Text(value,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(color: color, fontWeight: FontWeight.w800)),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(99),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 16,
+            height: 16,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.20),
+              shape: BoxShape.circle,
             ),
-          ],
-        ),
+            child: Center(
+              child: Text(
+                symbol,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900,
+                  color: color,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '$amount $label',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+        ],
       ),
     );
   }

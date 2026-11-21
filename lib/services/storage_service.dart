@@ -5,14 +5,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const pendingTransactionsStorageKey = 'trackr_pending_transactions';
 const handledSmsStorageKey = 'trackr_handled_sms';
+const resolvedLedgerStorageKey = 'trackr_resolved_ledger';
 
 class StorageService {
-  StorageService._();
-  static final instance = StorageService._();
+  StorageService({FlutterSecureStorage? secureStorage})
+      : _secureStorage = secureStorage ??
+            const FlutterSecureStorage(
+              aOptions: AndroidOptions(encryptedSharedPreferences: true),
+            );
 
-  static const _secureStorage = FlutterSecureStorage(
-    aOptions: AndroidOptions(encryptedSharedPreferences: true),
-  );
+  static StorageService instance = StorageService();
+
+  final FlutterSecureStorage _secureStorage;
 
   Future<List<Map<String, dynamic>>> readSecureList(String key) async {
     final raw = await _secureStorage.read(key: key);

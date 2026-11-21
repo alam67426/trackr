@@ -6,8 +6,8 @@ import '../models/transaction_model.dart';
 import '../utils/formatters.dart';
 
 class NotificationService {
-  NotificationService._();
-  static final instance = NotificationService._();
+  NotificationService();
+  static NotificationService instance = NotificationService();
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();

@@ -16,6 +16,7 @@ import '../models/transaction_model.dart';
 import '../services/insight_engine.dart';
 import '../services/low_power_ai_engine.dart';
 import '../services/notification_service.dart';
+import '../services/sms_listener.dart';
 import '../utils/formatters.dart';
 import '../widgets/dashboard/budget_progress.dart';
 import '../widgets/dashboard/category_chart.dart';
@@ -73,14 +74,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     return SafeArea(
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         children: [
+          // Clean Minimal Header
           Row(
             children: [
               if (profile.imagePath != null &&
                   File(profile.imagePath!).existsSync()) ...[
                 CircleAvatar(
-                    radius: 21,
+                    radius: 20,
                     backgroundImage: FileImage(File(profile.imagePath!))),
                 const SizedBox(width: 10),
               ],
@@ -88,53 +90,53 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('YOUR MONEY',
-                        style:
-                            Theme.of(context).textTheme.labelMedium?.copyWith(
-                                  color: const Color(0xFF96A2B8),
-                                  letterSpacing: 1.1,
-                                )),
-                    const SizedBox(height: 4),
                     Text(
-                        profile.fullName.isEmpty
-                            ? 'Trackr'
-                            : 'Hi, ${profile.fullName.split(' ').first}',
-                        style: Theme.of(context)
-                            .textTheme
-                            .headlineMedium
-                            ?.copyWith(
-                                fontWeight: FontWeight.w900, fontSize: 30)),
-                    Text(monthLabel(month),
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: const Color(0xFF96A2B8))),
+                      profile.fullName.isEmpty
+                          ? 'Good morning'
+                          : 'Hi, ${profile.fullName.split(' ').first}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 20,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      monthLabel(month),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF96A2B8),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
               ),
               Container(
                 decoration: BoxDecoration(
                   color: const Color(0xFF171D2B),
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: const Color(0xFF303B50)),
                 ),
                 child: Row(
                   children: [
                     IconButton(
+                      visualDensity: VisualDensity.compact,
                       tooltip: 'Previous month',
                       onPressed: () => ref
                           .read(currentMonthProvider.notifier)
                           .state = DateTime(month.year, month.month - 1),
-                      icon: const Icon(Icons.chevron_left),
+                      icon: const Icon(Icons.chevron_left, size: 20),
                     ),
                     Container(
-                        width: 1, height: 22, color: const Color(0xFF303B50)),
+                        width: 1, height: 18, color: const Color(0xFF303B50)),
                     IconButton(
+                      visualDensity: VisualDensity.compact,
                       tooltip: 'Next month',
                       onPressed: () => ref
                           .read(currentMonthProvider.notifier)
                           .state = DateTime(month.year, month.month + 1),
-                      icon: const Icon(Icons.chevron_right),
+                      icon: const Icon(Icons.chevron_right, size: 20),
                     ),
                   ],
                 ),
@@ -142,42 +144,141 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ],
           ),
           const SizedBox(height: 14),
-          PendingBadge(count: pendingCount, onTap: widget.onOpenPending),
-          const SizedBox(height: 14),
+
+          // Pending Alert (only shows when there are items needing review)
+          if (pendingCount > 0) ...[
+            PendingBadge(count: pendingCount, onTap: widget.onOpenPending),
+            const SizedBox(height: 14),
+          ],
+
+          // SMS Auto-Detection Onboarding Prompt (shown if not yet enabled)
+          if (!settings.smsAutoDetection) ...[
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0x2200CEC9), Color(0x116C5CE7)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0x4400CEC9)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: const BoxDecoration(
+                      color: Color(0x3300CEC9),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.sms_outlined,
+                        color: Color(0xFF00CEC9), size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Track Bank Expenses',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Enable auto-detection to track bank SMS offline',
+                          style: TextStyle(
+                            color: Color(0xFF96A2B8),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF00CEC9),
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      textStyle: const TextStyle(
+                          fontWeight: FontWeight.w700, fontSize: 12),
+                    ),
+                    onPressed: () => _enableSmsDetection(context, ref),
+                    child: const Text('Enable'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
+
+          // Hero Balance Card (Giant centered amount + horizontal In/Out pills)
           SpendingSummaryCard(
               transactions: monthTx, reimbursements: reimbursements),
           const SizedBox(height: 14),
-          SettlementOverviewCard(
-              transactions: monthTx, reimbursements: reimbursements),
+
+          // Settlement Overview (if active split bills exist)
           if (monthTx.any((item) => item.splitWith.isNotEmpty) ||
-              reimbursements.isNotEmpty)
+              reimbursements.isNotEmpty) ...[
+            SettlementOverviewCard(
+                transactions: monthTx, reimbursements: reimbursements),
             const SizedBox(height: 14),
+          ],
+
+          // Today's Mini Spending Bar
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               color: const Color(0xFF101724),
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0x22303B50)),
             ),
             child: Row(
               children: [
                 const Icon(Icons.today_outlined,
-                    size: 18, color: Color(0xFF00CEC9)),
-                const SizedBox(width: 9),
+                    size: 16, color: Color(0xFF00CEC9)),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     "Today  ${money(todayTx.fold<double>(0, (s, t) => s + t.amount))}",
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700, fontSize: 13),
                   ),
                 ),
-                Text('${todayTx.length} entries',
-                    style: Theme.of(context).textTheme.bodySmall),
+                Text(
+                  '${todayTx.length} entries',
+                  style: const TextStyle(
+                      fontSize: 11, color: Color(0xFF96A2B8)),
+                ),
               ],
             ),
           ),
           const SizedBox(height: 14),
+
+          // Sleek Minimal Budget Card
           BudgetProgress(
               transactions: monthTx, monthlyBudget: settings.monthlyBudget),
           const SizedBox(height: 14),
+
+          // Smooth Daily Rhythm Area Chart
+          DailySpendingChart(transactions: monthTx),
+          const SizedBox(height: 14),
+
+          // Connected Timeline Recent Activity
+          RecentTransactions(transactions: lastTen),
+          const SizedBox(height: 14),
+
+          // Smart Sarcastic / Helpful Saving Tips
           SavingTipCard(
             insights: insights,
             onAction: (insight) {
@@ -191,15 +292,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             },
           ),
           const SizedBox(height: 14),
+
+          // Category Spending Breakdown
           CategoryChart(transactions: monthTx),
-          const SizedBox(height: 14),
-          DailySpendingChart(transactions: monthTx),
-          const SizedBox(height: 14),
-          RecentTransactions(transactions: lastTen),
         ]
             .animate(interval: 35.ms)
             .fadeIn(duration: 220.ms)
-            .slideY(begin: .04, end: 0),
+            .slideY(begin: .03, end: 0),
       ),
     );
   }
@@ -221,6 +320,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
     for (final alert in alerts) {
       await NotificationService.instance.budgetAlert(alert.title, alert.body);
+    }
+  }
+  Future<void> _enableSmsDetection(BuildContext context, WidgetRef ref) async {
+    final listener = SMSListener();
+    final granted = await listener.requestPermission();
+    if (!granted) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('SMS permission is required to detect bank messages.')),
+        );
+      }
+      return;
+    }
+    await beginNewSmsDetectionWindow(lookback: const Duration(days: 30));
+    final settings = ref.read(settingsProvider);
+    await ref.read(settingsProvider.notifier).update(settings.copyWith(smsAutoDetection: true));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('SMS auto-tracking enabled! Scanning recent transactions...')),
+      );
+    }
+    var found = 0;
+    await listener.rescanRecentInbox((pending) async {
+      final added = await ref.read(pendingProvider.notifier).add(pending);
+      if (added) found++;
+    }, lookback: const Duration(days: 30));
+    if (context.mounted && found > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Found $found recent transaction(s) ready for review!')),
+      );
     }
   }
 }

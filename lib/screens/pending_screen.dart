@@ -9,6 +9,7 @@ import '../utils/constants.dart';
 import '../utils/formatters.dart';
 import '../widgets/transactions/pending_transaction_tile.dart';
 import '../widgets/transactions/add_transaction_dialog.dart';
+import '../services/sms_listener.dart';
 
 class PendingScreen extends ConsumerWidget {
   const PendingScreen({super.key});
@@ -19,20 +20,25 @@ class PendingScreen extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         title: Text('Pending (${pending.length})'),
-        actions: pending.isEmpty
-            ? null
-            : [
-                IconButton(
-                  tooltip: 'Approve all',
-                  onPressed: () => _confirmApproveAll(context, ref),
-                  icon: const Icon(Icons.done_all),
-                ),
-                IconButton(
-                  tooltip: 'Reject all',
-                  onPressed: () => _confirmRejectAll(context, ref),
-                  icon: const Icon(Icons.delete_sweep_outlined),
-                ),
-              ],
+        actions: [
+          IconButton(
+            tooltip: 'Scan recent SMS',
+            onPressed: () => _rescanInbox(context, ref),
+            icon: const Icon(Icons.sync_outlined),
+          ),
+          if (pending.isNotEmpty) ...[
+            IconButton(
+              tooltip: 'Approve all',
+              onPressed: () => _confirmApproveAll(context, ref),
+              icon: const Icon(Icons.done_all),
+            ),
+            IconButton(
+              tooltip: 'Reject all',
+              onPressed: () => _confirmRejectAll(context, ref),
+              icon: const Icon(Icons.delete_sweep_outlined),
+            ),
+          ],
+        ],
       ),
       body: pending.isEmpty
           ? Center(
@@ -45,6 +51,12 @@ class PendingScreen extends ConsumerWidget {
                 const SizedBox(height: 4),
                 Text('New detected bank messages will appear here.',
                     style: Theme.of(context).textTheme.bodySmall),
+                const SizedBox(height: 16),
+                FilledButton.tonalIcon(
+                  onPressed: () => _rescanInbox(context, ref),
+                  icon: const Icon(Icons.sync_outlined, size: 18),
+                  label: const Text('Scan Recent Bank SMS'),
+                ),
               ]),
             )
           : ListView.builder(
@@ -198,6 +210,37 @@ class PendingScreen extends ConsumerWidget {
     );
     if (rejected == true) {
       await ref.read(pendingProvider.notifier).rejectAll();
+    }
+  }
+  Future<void> _rescanInbox(BuildContext context, WidgetRef ref) async {
+    final listener = SMSListener();
+    final granted = await listener.requestPermission();
+    if (!granted) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('SMS permission is required to scan messages.')),
+        );
+      }
+      return;
+    }
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Scanning recent bank SMS...')),
+      );
+    }
+    var found = 0;
+    await listener.rescanRecentInbox((pending) async {
+      final added = await ref.read(pendingProvider.notifier).add(pending);
+      if (added) found++;
+    }, lookback: const Duration(days: 30));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(found > 0
+                ? 'Found $found new transaction(s) for review!'
+                : 'No new bank transactions found in recent messages.')),
+      );
     }
   }
 }
